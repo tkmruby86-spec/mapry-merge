@@ -35,27 +35,55 @@ def extract_number(path: Path) -> int:
     return int(nums[-1]) if nums else 999999
 
 
+def find_lidar_base(target_path: Path) -> Path | None:
+    """
+    指定パス、またはその親・子階層から 'lidar' フォルダを持つ基底フォルダを探索する。
+    例:
+      - 2026xxxx_xxxx/
+      - 2026xxxx_xxxx/lidar/
+      - 2026xxxx_xxxx/lidar/pointcloud/
+      - 2026xxxx_xxxx/lidar/pointcloud/xxx.pcd
+    のいずれがドラッグされても 2026xxxx_xxxx を特定できる。
+    """
+    cur = target_path.resolve()
+    if cur.is_file():
+        cur = cur.parent
+
+    # 1. 自身または祖先を遡って探す
+    check_dir = cur
+    for _ in range(4):
+        if (check_dir / "lidar").is_dir():
+            return check_dir
+        if check_dir.name == "lidar":
+            return check_dir.parent
+        if check_dir.parent == check_dir:
+            break
+        check_dir = check_dir.parent
+
+    # 2. 直下のサブディレクトリから探す
+    if cur.is_dir():
+        sub_dirs = [p for p in cur.iterdir() if p.is_dir() and (p / "lidar").is_dir()]
+        if len(sub_dirs) == 1:
+            return sub_dirs[0]
+        elif len(sub_dirs) > 1:
+            print(f"複数の一致するデータフォルダが見つかりました: {[d.name for d in sub_dirs]}")
+            print("処理したい特定のフォルダをドラッグ＆ドロップしてください。")
+            sys.exit(1)
+
+    return None
+
+
 def resolve_directories(target_path: Path, output_dir: Path | None = None):
     """
     指定されたパスから入力フォルダ（lidar/）と出力先を特定する。
-    直接 '20260619_123157' フォルダを指定されても、親フォルダを指定されても対応可能。
     """
-    target_path = target_path.resolve()
-    
-    # target_path の直下に lidar があるか確認
-    if (target_path / "lidar").is_dir():
-        base_dir = target_path
-    else:
-        # 親フォルダが渡された可能性（配下に lidar を持つサブフォルダがあるか検索）
-        sub_dirs = [p for p in target_path.iterdir() if p.is_dir() and (p / "lidar").is_dir()]
-        if len(sub_dirs) == 1:
-            base_dir = sub_dirs[0]
-        elif len(sub_dirs) > 1:
-            print(f"複数の一致するデータフォルダが見つかりました: {[d.name for d in sub_dirs]}")
-            print("処理対象のフォルダを直接指定してください。")
-            sys.exit(1)
-        else:
-            raise FileNotFoundError(f"'lidar' フォルダが見つかりません: {target_path}")
+    base_dir = find_lidar_base(target_path)
+    if not base_dir:
+        raise FileNotFoundError(
+            f"指定された場所から 'lidar' フォルダが見つかりませんでした。\n"
+            f"指定パス: {target_path}\n"
+            f"フォルダ内に 'lidar' (中に local_path.csv と pointcloud フォルダ) があるか確認してください。"
+        )
 
     lidar_dir = base_dir / "lidar"
     pcd_dir = lidar_dir / "pointcloud"
@@ -97,7 +125,7 @@ def merge_mapry_data(target_dir: Path, output_dir: Path | None = None):
     print("==================================================")
     print(f"  mapry Point Cloud Merger")
     print("==================================================")
-    print(f"対象データID  : {target_id}")
+    print(f"対象データID    : {target_id}")
     print(f"入力ディレクトリ: {base_dir}")
     print(f"出力ファイル    : {output_ply}")
     print("--------------------------------------------------")
@@ -199,8 +227,8 @@ def merge_mapry_data(target_dir: Path, output_dir: Path | None = None):
         out_data.tofile(f_out)
 
     print("--------------------------------------------------")
-    print(f"【処理成功】出力が完了しました:")
-    print(f" -> {output_ply}")
+    print(f"【処理成功】結合が正常に完了しました！")
+    print(f"出力ファイル: {output_ply}")
     print("==================================================")
 
 
@@ -227,13 +255,13 @@ def main():
     target_dir = args.input_dir
     if target_dir is None:
         # 引数が与えられていない場合はGUIダイアログまたはコンソール入力を試みる
-        print("データフォルダが指定されていません。フォルダ選択ダイアログを開きます...")
+        print("データフォルダが直接指定されていません。フォルダ選択ダイアログを開きます...")
         gui_path = select_folder_gui()
         if gui_path:
             target_dir = gui_path
         else:
             try:
-                input_str = input("対象データフォルダのパスを入力してください: ").strip().strip('\'"')
+                input_str = input("対象データフォルダのパスを入力してください（ドラッグ＆ドロップでも可）: ").strip().strip('\'"')
                 if input_str:
                     target_dir = Path(input_str)
             except (KeyboardInterrupt, EOFError):
@@ -247,7 +275,7 @@ def main():
     try:
         merge_mapry_data(target_dir, args.output_dir)
     except Exception as e:
-        print(f"\nエラーが発生しました: {e}", file=sys.stderr)
+        print(f"\n【エラーが発生しました】: {e}", file=sys.stderr)
         sys.exit(1)
 
 
