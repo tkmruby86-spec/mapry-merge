@@ -1,9 +1,11 @@
+from __future__ import annotations
 import os
 import sys
 import glob
 import re
 import argparse
 from pathlib import Path
+from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation as R
@@ -35,7 +37,7 @@ def extract_number(path: Path) -> int:
     return int(nums[-1]) if nums else 999999
 
 
-def find_lidar_base(target_path: Path) -> Path | None:
+def find_lidar_base(target_path: Path) -> Optional[Path]:
     """
     指定パス、またはその親・子階層から 'lidar' フォルダを持つ基底フォルダを探索する。
     例:
@@ -43,15 +45,15 @@ def find_lidar_base(target_path: Path) -> Path | None:
       - 2026xxxx_xxxx/lidar/
       - 2026xxxx_xxxx/lidar/pointcloud/
       - 2026xxxx_xxxx/lidar/pointcloud/xxx.pcd
-    のいずれがドラッグされても 2026xxxx_xxxx を特定できる。
+    のいずれが指定されても 2026xxxx_xxxx を自動特定する。
     """
     cur = target_path.resolve()
     if cur.is_file():
         cur = cur.parent
 
-    # 1. 自身または祖先を遡って探す
+    # 1. 自身または親階層を遡って探す
     check_dir = cur
-    for _ in range(4):
+    for _ in range(5):
         if (check_dir / "lidar").is_dir():
             return check_dir
         if check_dir.name == "lidar":
@@ -67,13 +69,13 @@ def find_lidar_base(target_path: Path) -> Path | None:
             return sub_dirs[0]
         elif len(sub_dirs) > 1:
             print(f"複数の一致するデータフォルダが見つかりました: {[d.name for d in sub_dirs]}")
-            print("処理したい特定のフォルダをドラッグ＆ドロップしてください。")
+            print("処理したい特定のフォルダを指定してください。")
             sys.exit(1)
 
     return None
 
 
-def resolve_directories(target_path: Path, output_dir: Path | None = None):
+def resolve_directories(target_path: Path, output_dir: Optional[Path] = None):
     """
     指定されたパスから入力フォルダ（lidar/）と出力先を特定する。
     """
@@ -102,7 +104,7 @@ def resolve_directories(target_path: Path, output_dir: Path | None = None):
     return target_id, base_dir, lidar_dir, pcd_dir, path_csv, output_ply
 
 
-def select_folder_gui() -> Path | None:
+def select_folder_gui() -> Optional[Path]:
     """GUIファイル選択ダイアログ（Windows等で引数なし起動された場合のフォールバック）"""
     try:
         import tkinter as tk
@@ -119,7 +121,23 @@ def select_folder_gui() -> Path | None:
     return None
 
 
-def merge_mapry_data(target_dir: Path, output_dir: Path | None = None):
+def get_pcd_point_count(pcd_path: Path) -> int:
+    """PCDヘッダーから点数を高速に取得する"""
+    with open(pcd_path, "rb") as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            if line.startswith(b"POINTS"):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return int(parts[1])
+            if line.startswith(b"DATA"):
+                break
+    return 0
+
+
+def merge_mapry_data(target_dir: Path, output_dir: Optional[Path] = None):
     target_id, base_dir, lidar_dir, pcd_dir, path_csv, output_ply = resolve_directories(target_dir, output_dir)
 
     print("==================================================")
@@ -155,55 +173,12 @@ def merge_mapry_data(target_dir: Path, output_dir: Path | None = None):
     if not pcd_files:
         raise FileNotFoundError(f"PCDファイルが見つかりません: {pcd_dir}")
 
-    print(f"合計 {len(pcd_files)} 個のスキャンデータを結合します...")
+    # 事前に総点数をヘッダーから計算（超高速）
+    print("点群メタデータを解析中...")
+    total_points = sum(get_pcd_point_count(p) for p in pcd_files)
+    print(f"処理対象: {len(pcd_files)} 個のスキャンファイル (総点数: {total_points:,} 点)")
 
-    all_x, all_y, all_z, all_intensity = [], [], [], []
-
-    # 3. 各PCDファイルの処理
-    for i, pcd_path in enumerate(pcd_files, 1):
-        if i % 10 == 0 or i == len(pcd_files):
-            print(f"[{i}/{len(pcd_files)}] 変換中: {pcd_path.name}")
-
-        with open(pcd_path, "rb") as f:
-            while True:
-                line = f.readline()
-                if not line or line.startswith(b"DATA binary"):
-                    break
-            raw_data = np.fromfile(f, dtype=POINT_DTYPE)
-
-        if len(raw_data) == 0:
-            continue
-
-        # タイムスタンプ復元 (秒 + ナノ秒)
-        point_times = raw_data['timestamp_sec'].astype(np.float64) + raw_data['timestamp_nsec'].astype(np.float64) * 1e-9
-
-        # 軌跡の有効範囲内にクランプ
-        valid_times = np.clip(point_times, path_times[0], path_times[-1])
-
-        # タイムスタンプに応じた位置・回転の取得
-        interp_rot = slerp(valid_times)
-        pos = interp_pos(valid_times)
-
-        pts = np.stack([raw_data['x'], raw_data['y'], raw_data['z']], axis=1)
-
-        # 局所座標系からグローバル座標系への回転・平行移動
-        transformed_pts = interp_rot.apply(pts) + pos
-
-        all_x.append(transformed_pts[:, 0].astype(np.float32))
-        all_y.append(transformed_pts[:, 1].astype(np.float32))
-        all_z.append(transformed_pts[:, 2].astype(np.float32))
-        all_intensity.append(raw_data['intensity'])
-
-    print("全点群データを統合中...")
-    all_x = np.concatenate(all_x)
-    all_y = np.concatenate(all_y)
-    all_z = np.concatenate(all_z)
-    all_intensity = np.concatenate(all_intensity)
-
-    total_points = len(all_x)
-    print(f"結合完了: 総点数 {total_points:,} 点")
-
-    # 4. PLY出力
+    # 3. PLYヘッダーを先行書き込み
     ply_header = (
         f"ply\n"
         f"format binary_little_endian 1.0\n"
@@ -215,20 +190,58 @@ def merge_mapry_data(target_dir: Path, output_dir: Path | None = None):
         f"end_header\n"
     ).encode('ascii')
 
-    out_data = np.empty(total_points, dtype=OUT_DTYPE)
-    out_data['x'] = all_x
-    out_data['y'] = all_y
-    out_data['z'] = all_z
-    out_data['intensity'] = all_intensity
+    # 4. ストリーミング書き出し（メモリ消費を抑え、巨大点群でもクラッシュしない方式）
+    print(f"PLYファイルへストリーミング変換中: {output_ply.name}")
+    processed_points = 0
 
-    print(f"PLYファイルを出力中: {output_ply}")
     with open(output_ply, "wb") as f_out:
         f_out.write(ply_header)
-        out_data.tofile(f_out)
+
+        for i, pcd_path in enumerate(pcd_files, 1):
+            with open(pcd_path, "rb") as f_in:
+                while True:
+                    line = f_in.readline()
+                    if not line or line.startswith(b"DATA binary"):
+                        break
+                raw_data = np.fromfile(f_in, dtype=POINT_DTYPE)
+
+            if len(raw_data) == 0:
+                continue
+
+            # タイムスタンプ復元 (秒 + ナノ秒)
+            point_times = raw_data['timestamp_sec'].astype(np.float64) + raw_data['timestamp_nsec'].astype(np.float64) * 1e-9
+
+            # 軌跡の有効範囲内にクランプ
+            valid_times = np.clip(point_times, path_times[0], path_times[-1])
+
+            # タイムスタンプに応じた位置・回転の取得
+            interp_rot = slerp(valid_times)
+            pos = interp_pos(valid_times)
+
+            pts = np.stack([raw_data['x'], raw_data['y'], raw_data['z']], axis=1)
+
+            # 局所座標系からグローバル座標系への回転・平行移動
+            transformed_pts = interp_rot.apply(pts) + pos
+
+            # 出力用バッファに詰めてファイルへ直接追記書き込み（メモリを即時解放）
+            batch_data = np.empty(len(raw_data), dtype=OUT_DTYPE)
+            batch_data['x'] = transformed_pts[:, 0].astype(np.float32)
+            batch_data['y'] = transformed_pts[:, 1].astype(np.float32)
+            batch_data['z'] = transformed_pts[:, 2].astype(np.float32)
+            batch_data['intensity'] = raw_data['intensity']
+
+            batch_data.tofile(f_out)
+
+            processed_points += len(raw_data)
+            progress = (processed_points / total_points * 100) if total_points > 0 else 0
+            print(f"[{i}/{len(pcd_files)}] {pcd_path.name} 完了 ({len(raw_data):,} 点 / 累計進捗: {progress:.1f}%)")
+
+            # メモリ解放
+            del raw_data, transformed_pts, batch_data
 
     print("--------------------------------------------------")
     print(f"【処理成功】結合が正常に完了しました！")
-    print(f"出力ファイル: {output_ply}")
+    print(f"出力ファイル: {output_ply} (総点数: {processed_points:,} 点)")
     print("==================================================")
 
 
