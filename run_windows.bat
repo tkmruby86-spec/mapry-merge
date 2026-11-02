@@ -7,36 +7,66 @@ echo   mapry LiDAR Point Cloud Merger (Windows)
 echo ========================================================
 echo.
 
-:: 1. Check Python
-set PY=python
+:: 1. Search for Python
+set PY=
+
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    py -3 --version >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo [ERROR] Python is not installed or not in PATH.
-        echo.
-        echo Please install Python (3.8+) and make sure to check:
-        echo   [x] Add python.exe to PATH
-        echo.
-        pause
-        exit /b 1
-    )
-    set PY=py -3
+if not errorlevel 1 (
+    set PY=python
+    goto :PYTHON_FOUND
 )
 
-echo Python found.
+py -3 --version >nul 2>&1
+if not errorlevel 1 (
+    set PY=py -3
+    goto :PYTHON_FOUND
+)
+
+:: Search standard install paths if PATH was not set
+for /d %%D in ("%LocalAppData%\Programs\Python\Python3*") do (
+    if exist "%%~fD\python.exe" (
+        set "PY=%%~fD\python.exe"
+        goto :PYTHON_FOUND
+    )
+)
+
+for /d %%D in ("C:\Python3*") do (
+    if exist "%%~fD\python.exe" (
+        set "PY=%%~fD\python.exe"
+        goto :PYTHON_FOUND
+    )
+)
+
+for /d %%D in ("%ProgramFiles%\Python3*") do (
+    if exist "%%~fD\python.exe" (
+        set "PY=%%~fD\python.exe"
+        goto :PYTHON_FOUND
+    )
+)
+
+:PYTHON_NOT_FOUND
+echo [ERROR] Python was not found on this computer.
+echo.
+echo Please install Python 3.8 or higher from python.org.
+echo Important: Check "Add python.exe to PATH" during installation.
+echo.
+pause
+exit /b 1
+
+:PYTHON_FOUND
+echo Python found: %PY%
 echo.
 
 :: 2. Check and Install Libraries
 echo Checking required libraries...
 %PY% -c "import numpy, pandas, scipy" >nul 2>&1
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
-    echo Installing required packages (numpy, pandas, scipy)...
+    echo Installing required packages: numpy, pandas, scipy...
     echo Please wait a minute...
     echo.
     %PY% -m pip install -r requirements.txt
-    if %errorlevel% neq 0 (
+    if errorlevel 1 (
         echo.
         echo [ERROR] Failed to install libraries.
         echo Please check your internet connection.
@@ -58,7 +88,7 @@ if "%~1"=="" (
     %PY% mapry_merge.py "%~1"
 )
 
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo.
     echo --------------------------------------------------------
     echo [ERROR] Process finished with errors.
