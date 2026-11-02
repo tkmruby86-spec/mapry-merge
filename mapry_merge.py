@@ -12,6 +12,16 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial.transform import Slerp
 from scipy.interpolate import interp1d
 
+# Windows環境でのコンソール文字化け・Unicodeエラー防止
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 
 # PCDヘッダー定義（24バイト構造）
 POINT_DTYPE = np.dtype([
